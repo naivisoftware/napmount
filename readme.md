@@ -5,10 +5,8 @@
 	
 # Description
 
-Auto mounts USB-drives (*sda, sdb* etc.) on initialization of NAP Core, before the application is loaded. The module 
-also 
-watches and notifies the user about changes in USB disk-configuration, automatically mounting new drives and 
-unmounting disconnected ones. Linux only.
+Auto mounts SCSI-drives (*sda, sdb* etc.), including USB sticks and SD cards on initialization of NAP Core, before the application is loaded. The module 
+also watches and notifies the user about changes in SCSI disk configuration, automatically mounting new drives and unmounting disconnected ones. Linux only.
 
 ## Installation
 
