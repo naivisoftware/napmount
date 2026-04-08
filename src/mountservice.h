@@ -6,6 +6,7 @@
 #include <nap/signalslot.h>
 #include <nap/directorywatcher.h>
 #include <nap/timer.h>
+#include <cassert>
 
 namespace nap
 {
@@ -20,14 +21,23 @@ namespace nap
 		RTTI_ENABLE(ServiceConfiguration)
 	public:
 		MountServiceConfiguration() = default;
+		bool mEnabled = true;								///< Property: 'Enabled' If the mounter is activated and initialized on startup
 		std::vector<std::string> mExclusions;				///< Property: 'Exclusions' Disk UUID or labels to exclude
 		std::vector<std::string> mInclusions;				///< Property: 'Inclusions' Disk UUID or labels to include, include all when left empty
 		std::string mMountPoint = "/tmp/napmount";			///< Property: 'MountRoot' mount point root directory
+		float mFrequency = 1.0f;							///< Property: 'Frequency' How often to check for disk changes in seconds
 
 		rtti::TypeInfo getServiceType() const override		{ return RTTI_OF(MountService); }
 	};
 
 
+	/**
+	 * Watches /dev/disk/by-uuid and mounts disks from that directory at the given mount-point.
+	 * Linux Only!
+	 *
+	 * This object requires sudo NOPASSWD privileges for the following commands:
+	 * user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /bin/rmdir, /usr/sbin/blkid
+	 */
 	class NAPAPI MountService : public Service
 	{
 		RTTI_ENABLE(Service)
@@ -40,38 +50,54 @@ namespace nap
 
 		
 		/**
-		 * Initialize the mounter
+		 * Initialize the mounter and mount drives
 		 * @param errorState contains the error message on failure
 		 * @return if the video service was initialized correctly
 		 */
 		bool init(nap::utility::ErrorState& errorState) override;
 		
 		/**
-		 * Invoked by core in the app loop. Update order depends on service dependency
-		 * This call is invoked after the resource manager has loaded any file changes but before
-		 * the app update call. If service B depends on A, A:s:update() is called before B::update()
+		 * Updates mount map at fixed interval.
+		 * Listen to the various signals (driveAdded, etc.) to receive mount updates.
 		 * @param deltaTime: the time in seconds between calls
-		*/
+		 */
 		void update(double deltaTime) override;
 		
 		/**
-		 * Invoked when exiting the main loop, after app shutdown is called
-		 * Use this function to close service specific handles, drivers or devices
-		 * When service B depends on A, Service B is shutdown before A
+		 * Unmounts all currently mounted drives
 		 */
 		void shutdown() override;
 
-		// Called when a disk is added or removed
+		/**
+		 * @return Paths to all mounted drives
+		 */
+		std::vector<std::string> getDrives() const;
+
+		/**
+		 * @return Mounted drives, UUID & mount point
+		 */
+		using MountMap = std::unordered_map<std::string, std::string>;
+		const MountMap& getMap() const { return mMountMap;}
+
+		/**
+		 * @return if the mounter is enabled
+		 */
+		bool getEnabled() const { assert(mConfig != nullptr); return mConfig->mEnabled;}
+
+		// Called when a drive is mounted
 		Signal<const std::string&> driveAdded;
+
+		// Called when a drive is removed
 		Signal<const std::string&> driveRemoved;
+
+		// Called when the drive config has changed
 		Signal<> configChanged;
 
 		// DISK UUID (required) & Label (optional)
 		using DiskID = std::pair<const std::string, const std::string>;
 
 	private:
-		// DISK UUID & -> Point
-		using MountMap = std::unordered_map<std::string, std::string>;
+
 
 		std::unordered_set<std::string> mExclusionMap; // Disk label or uuid to exclude
 		std::unordered_set<std::string> mInclusionMap; // Disk label or uuid to include, empty = all

@@ -7,9 +7,11 @@
 #include <nap/logger.h>
 
 RTTI_BEGIN_CLASS(nap::MountServiceConfiguration)
-    RTTI_PROPERTY("MountPoint", &nap::MountServiceConfiguration::mMountPoint, nap::rtti::EPropertyMetaData::Default, "Mount location root")
-	RTTI_PROPERTY("Exclusions", &nap::MountServiceConfiguration::mExclusions, nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to exclude");
-	RTTI_PROPERTY("Inclusions", &nap::MountServiceConfiguration::mInclusions, nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to include; empty = include all");
+    RTTI_PROPERTY("Enabled",    &nap::MountServiceConfiguration::mEnabled,      nap::rtti::EPropertyMetaData::Default, "If the mounter is activated and initialized on startup" ) ;
+    RTTI_PROPERTY("MountPoint", &nap::MountServiceConfiguration::mMountPoint,   nap::rtti::EPropertyMetaData::Default, "Mount location (root)")
+	RTTI_PROPERTY("Exclusions", &nap::MountServiceConfiguration::mExclusions,   nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to exclude");
+	RTTI_PROPERTY("Inclusions", &nap::MountServiceConfiguration::mInclusions,   nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to include; empty = include all");
+    RTTI_PROPERTY("Frequency",  &nap::MountServiceConfiguration::mFrequency,    nap::rtti::EPropertyMetaData::Default, "How often to check for disk changes in seconds")
 RTTI_END_CLASS
 
 RTTI_BEGIN_CLASS_NO_DEFAULT_CONSTRUCTOR(nap::MountService)
@@ -148,7 +150,6 @@ namespace nap
     // Service
     //////////////////////////////////////////
 
-
 	bool MountService::init(nap::utility::ErrorState& errorState)
 	{
 		mConfig = getConfiguration<MountServiceConfiguration>();
@@ -163,21 +164,22 @@ namespace nap
 		for (const auto& e : mConfig->mExclusions)
 			mExclusionMap.emplace(e);
 
+        // Bail if we're not enabled
+        if (!mConfig->mEnabled)
+            return true;
+
+        // Ensure disk by uuid directory exists
+        if (!errorState.check(utility::dirExists(diskRoot),
+            "Unable to install drive watcher, directory '%s' doesn't exist!", diskRoot))
+            return false;
+
         // Mount drives
         diff();
 
-        // Install directory watcher on disk/by-uuid directory, used to periodically check for disk changes.
-        if (utility::dirExists(diskRoot))
-        {
-            // Install directory watcher
-            Logger::info("Installing drive watcher on '%s'", diskRoot);
-            mWatcher = std::make_unique<DirectoryWatcher>(diskRoot);
-            mTimer.reset();
-        }
-        else
-        {
-            Logger::warn("Unable to install drive watcher, directory '%s' doesn't exist!", diskRoot);
-        }
+        // Install directory watcher
+        Logger::info("Installing drive watcher on '%s'", diskRoot);
+        mWatcher = std::make_unique<DirectoryWatcher>(diskRoot);
+        mTimer.reset();
 		return true;
 	}
 
@@ -185,7 +187,8 @@ namespace nap
 	void MountService::update(double deltaTime)
 	{
         // File watcher unavailable or window not met
-        if (mWatcher == nullptr || mTimer.getElapsedTime() < 1.0)
+        assert(mConfig != nullptr);
+        if (mWatcher == nullptr || mTimer.getElapsedTime() < mConfig->mFrequency)
             return;
 
         // Diff mounted disks when changes are detected
@@ -208,6 +211,15 @@ namespace nap
             }
         }
 	}
+
+
+    std::vector<std::string> MountService::getDrives() const
+    {
+        std::vector<std::string> disks; disks.reserve(mMountMap.size());
+        for (const auto& mp : mMountMap)
+            disks.emplace_back(mp.second);
+        return disks;
+    }
 
 
     void MountService::diff()
