@@ -3,6 +3,9 @@
 // External Includes
 #include <nap/service.h>
 #include <unordered_set>
+#include <nap/signalslot.h>
+#include <nap/directorywatcher.h>
+#include <nap/timer.h>
 
 namespace nap
 {
@@ -19,6 +22,7 @@ namespace nap
 		MountServiceConfiguration() = default;
 		std::vector<std::string> mExclusions;				///< Property: 'Exclusions' Disk UUID or labels to exclude
 		std::vector<std::string> mInclusions;				///< Property: 'Inclusions' Disk UUID or labels to include, include all when left empty
+		std::string mMountPoint = "/tmp/napmount";			///< Property: 'MountRoot' mount point root directory
 
 		rtti::TypeInfo getServiceType() const override		{ return RTTI_OF(MountService); }
 	};
@@ -28,19 +32,15 @@ namespace nap
 	{
 		RTTI_ENABLE(Service)
 	public:
+		static constexpr const char* diskRoot = "/dev/disk/by-uuid";       //< Disk root directory
+		static constexpr const char* diskLabel = "DISK";                   //< Default disk label
+
 		// Default Constructor
 		MountService(ServiceConfiguration* configuration) : Service(configuration)	{ }
 
-		/**
-		 * Use this call to register service dependencies
-		 * A service that depends on another service is initialized after all it's associated dependencies
-		 * This will ensure correct order of initialization, update calls and shutdown of all services
-		 * @param dependencies rtti information of the services this service depends on
-		 */
-		void getDependentServices(std::vector<rtti::TypeInfo>& dependencies) override;
 		
 		/**
-		 * Initializes the service
+		 * Initialize the mounter
 		 * @param errorState contains the error message on failure
 		 * @return if the video service was initialized correctly
 		 */
@@ -61,9 +61,31 @@ namespace nap
 		 */
 		void shutdown() override;
 
+		// Called when a disk is added or removed
+		Signal<const std::string&> driveAdded;
+		Signal<const std::string&> driveRemoved;
+		Signal<> configChanged;
+
+		// DISK UUID (required) & Label (optional)
+		using DiskID = std::pair<const std::string, const std::string>;
+
 	private:
+		// DISK UUID & -> Point
+		using MountMap = std::unordered_map<std::string, std::string>;
+
 		std::unordered_set<std::string> mExclusionMap; // Disk label or uuid to exclude
 		std::unordered_set<std::string> mInclusionMap; // Disk label or uuid to include, empty = all
 		MountServiceConfiguration* mConfig = nullptr;
+
+		MountMap mMountMap;
+		std::string mMountPoint;;
+		std::unique_ptr<DirectoryWatcher> mWatcher = nullptr;
+		HighResolutionTimer mTimer;
+		std::vector<std::string> mModifiedPaths;
+
+		void diff();
+		std::string mountpoint(const std::string& label, int rec = 0);
+		bool isIncluded(const DiskID& id);
+		bool isExcluded(const DiskID& id);
 	};
 }

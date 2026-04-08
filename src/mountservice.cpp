@@ -7,8 +7,9 @@
 #include <nap/logger.h>
 
 RTTI_BEGIN_CLASS(nap::MountServiceConfiguration)
-	RTTI_PROPERTY("Exclusions", &nap::MountServiceConfiguration::mExclusions, nap::rtti::EPropertyMetaData::Default);
-	RTTI_PROPERTY("Inclusions", &nap::MountServiceConfiguration::mInclusions, nap::rtti::EPropertyMetaData::Default);
+    RTTI_PROPERTY("MountPoint", &nap::MountServiceConfiguration::mMountPoint, nap::rtti::EPropertyMetaData::Default, "Mount location root")
+	RTTI_PROPERTY("Exclusions", &nap::MountServiceConfiguration::mExclusions, nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to exclude");
+	RTTI_PROPERTY("Inclusions", &nap::MountServiceConfiguration::mInclusions, nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to include; empty = include all");
 RTTI_END_CLASS
 
 RTTI_BEGIN_CLASS_NO_DEFAULT_CONSTRUCTOR(nap::MountService)
@@ -17,12 +18,11 @@ RTTI_END_CLASS
 
 namespace nap
 {
-    // UUID (required) & Label (optional)
-    using DiskID = std::pair<const std::string, const std::string>;
-
 	//////////////////////////////////////////
 	// Static
 	//////////////////////////////////////////
+
+    using DiskID = MountService::DiskID;
 
     static bool unmount(const std::string& point)
     {
@@ -144,10 +144,17 @@ namespace nap
     }
 
 
+    //////////////////////////////////////////
+    // Service
+    //////////////////////////////////////////
+
+
 	bool MountService::init(nap::utility::ErrorState& errorState)
 	{
 		mConfig = getConfiguration<MountServiceConfiguration>();
+        mMountPoint = mConfig->mMountPoint;
 
+        // Create inclusion & exclusion maps
 		mInclusionMap.reserve(mConfig->mInclusions.size());
 		for (const auto& i : mConfig->mInclusions)
 			mInclusionMap.emplace(i);
@@ -156,22 +163,162 @@ namespace nap
 		for (const auto& e : mConfig->mExclusions)
 			mExclusionMap.emplace(e);
 
-		//Logger::info("Initializing mountService");
+        // Mount drives
+        diff();
+
+        // Install directory watcher on disk/by-uuid directory, used to periodically check for disk changes.
+        if (utility::dirExists(diskRoot))
+        {
+            // Install directory watcher
+            Logger::info("Installing drive watcher on '%s'", diskRoot);
+            mWatcher = std::make_unique<DirectoryWatcher>(diskRoot);
+            mTimer.reset();
+        }
+        else
+        {
+            Logger::warn("Unable to install drive watcher, directory '%s' doesn't exist!", diskRoot);
+        }
 		return true;
 	}
 
 
 	void MountService::update(double deltaTime)
 	{
-	}
-	
+        // File watcher unavailable or window not met
+        if (mWatcher == nullptr || mTimer.getElapsedTime() < 1.0)
+            return;
 
-	void MountService::getDependentServices(std::vector<rtti::TypeInfo>& dependencies)
-	{
+        // Diff mounted disks when changes are detected
+        mModifiedPaths.clear();
+        if (mWatcher->update(mModifiedPaths)) {
+            diff();
+        }
+
+        // Reset timer
+        mTimer.reset();
 	}
 	
 
 	void MountService::shutdown()
 	{
+        for (const auto& entry : mMountMap)
+        {
+            if(!unmount(entry.second)) {
+                Logger::error("Unable to unmount '%s'", entry.second.c_str());
+            }
+        }
 	}
+
+
+    void MountService::diff()
+    {
+        // Check if the disks by label exists
+        Logger::info("Diffing disks at '%s'", diskRoot);
+
+        // Get disks
+        auto disks = listDisks();
+
+        // Remove the ones that aren't available anymore
+        for (auto mp = mMountMap.begin(); mp != mMountMap.end();)
+        {
+            // Check if there's an entry in the mounting map
+            auto fit = std::find_if(disks.begin(), disks.end(), [&mp](const auto& disk) {
+                return mp->first == disk.first;
+            });
+
+            // If there is, we don't purge it
+            if (fit != disks.end()) {
+                ++mp; continue;
+            }
+
+            // Delete entry & notify listeners
+            Logger::info("Removed drive '%s' at '%s'", mp->first.c_str(), mp->second.c_str());
+            std::string target = mp->second;
+            mp = mMountMap.erase(mp);
+            driveRemoved(mp->second); configChanged();
+
+            // unmount, delete and remove it
+            if (!unmount(target))
+                Logger::error("Unable to unmount '%s'", mp->second.c_str());
+
+            if (!removeDir(target))
+                Logger::error("Unable to remove '%s'", mp->second.c_str());
+        }
+
+        // Mount new drives
+        for (auto& disk : disks)
+        {
+            // Continue if directory is excluded
+            if (!isIncluded(disk) || isExcluded(disk))
+            {
+                Logger::debug("Excluding '%s:%s' as mount option",
+                    disk.first.c_str(), disk.second.empty() ? "?" : disk.second.c_str());
+                continue;
+            }
+
+            // Disk ID & Label (Reverts to Disk when not found)
+            const auto& di = disk.first;
+            const auto& dl = disk.second.empty() ? diskLabel : disk.second;
+
+            // Check if this disk is already mounted
+            if (mMountMap.find(di) != mMountMap.end())
+                continue;
+
+            // Create mount point -> must be user writable
+            auto mp = mountpoint(dl);
+            if (!utility::ensureDirExists(mp))
+            {
+                Logger::error("Unable to create directory '%s'", mp.c_str());
+                continue;
+            }
+
+            // Mount disk at given directory
+            if (!mount(di, mp))
+            {
+                Logger::error("Unable to mount disk '%s' at '%s'", di.c_str(), mp.c_str());
+                continue;
+            }
+
+            // Add as valid map entry
+            Logger::info("Mounted drive '%s:%s' at '%s'", di.c_str(), dl.c_str(), mp.c_str());
+
+            auto [fst, snd] = mMountMap.emplace(di, mp); assert(snd);
+            driveAdded(fst->second); configChanged();
+        }
+    }
+
+
+    std::string MountService::mountpoint(const std::string& label, int rec)
+    {
+        // Try to find a non-existing mount location -> append index when looped back
+        auto loc = utility::stringFormat("%s/%s", mMountPoint.c_str(), label.c_str());
+        loc = rec > 0 ? utility::stringFormat("%s_%d", loc.c_str(), rec+1) : loc;
+
+        // Check if it doesn't exist yet
+        const auto it = std::find_if(mMountMap.begin(), mMountMap.end(), [&loc](const auto& mp) {
+            return mp.second == loc;
+        });
+
+        return it == mMountMap.end() ? loc : mountpoint(label, ++rec);
+    }
+
+
+    bool MountService::isIncluded(const DiskID& id)
+    {
+        if (!mInclusionMap.empty())
+        {
+            auto in_uuids = mInclusionMap.find(id.first)  != mInclusionMap.end();
+            auto in_label = mInclusionMap.find(id.second) != mInclusionMap.end();
+            return in_uuids || in_label;
+        }
+        return true;
+    }
+
+
+    bool MountService::isExcluded(const DiskID& id)
+    {
+        auto in_uuids = mExclusionMap.find(id.first)  != mExclusionMap.end();
+        auto in_label = mExclusionMap.find(id.second) != mExclusionMap.end();
+        return in_uuids || in_label;
+    }
 }
