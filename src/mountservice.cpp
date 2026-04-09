@@ -8,6 +8,7 @@
 
 RTTI_BEGIN_CLASS(nap::MountServiceConfiguration)
     RTTI_PROPERTY("Enabled",    &nap::MountServiceConfiguration::mEnabled,      nap::rtti::EPropertyMetaData::Default, "If the mounter is activated and initialized on startup" ) ;
+    RTTI_PROPERTY("ReadOnly",   &nap::MountServiceConfiguration::mReadOnly,     nap::rtti::EPropertyMetaData::Default, "Mount disk read-only, otherwise read-write")
     RTTI_PROPERTY("MountPoint", &nap::MountServiceConfiguration::mMountPoint,   nap::rtti::EPropertyMetaData::Default, "Mount location (root)")
 	RTTI_PROPERTY("Exclusions", &nap::MountServiceConfiguration::mExclusions,   nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to exclude");
 	RTTI_PROPERTY("Inclusions", &nap::MountServiceConfiguration::mInclusions,   nap::rtti::EPropertyMetaData::Default, "Disk UUID or labels to include; empty = include all");
@@ -46,7 +47,7 @@ namespace nap
     }
 
 
-    static bool mount(const std::string& uuid, const std::string& point)
+    static bool mount(const std::string& uuid, const std::string& point, bool readOnly)
     {
         // Unmount point if a disk is mounted there
         if (mounted(point) && !unmount(point))
@@ -54,7 +55,10 @@ namespace nap
 
         // USER MUST HAVE 'NOPASSWD' permission for 'mount' cmd!
         // ie: cd /etc/sudoers.d; sudo nano pocketdvs; user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /usr/sbin/blkid
-        auto mount_cmd = utility::stringFormat(R"(sudo -n mount -r UUID="%s" "%s")", uuid.c_str(), point.c_str());
+        auto mount_cmd = readOnly ?
+            utility::stringFormat(R"(sudo -n mount -r UUID="%s" "%s")", uuid.c_str(), point.c_str()):
+            utility::stringFormat(R"(sudo -n mount UUID="%s" "%s")", uuid.c_str(), point.c_str());
+
         return system(mount_cmd.c_str()) == 0;
     }
 
@@ -252,9 +256,6 @@ namespace nap
             // unmount, delete and remove it
             if (!unmount(target))
                 Logger::error("Unable to unmount '%s'", mp->second.c_str());
-
-            if (!removeDir(target))
-                Logger::error("Unable to remove '%s'", mp->second.c_str());
         }
 
         // Mount new drives
@@ -285,7 +286,7 @@ namespace nap
             }
 
             // Mount disk at given directory
-            if (!mount(di, mp))
+            if (!mount(di, mp, getReadOnly()))
             {
                 Logger::error("Unable to mount disk '%s' at '%s'", di.c_str(), mp.c_str());
                 continue;

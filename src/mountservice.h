@@ -26,6 +26,7 @@ namespace nap
 		std::vector<std::string> mInclusions;				///< Property: 'Inclusions' Disk UUID or labels to include, include all when left empty
 		std::string mMountPoint = "/tmp/napmount";			///< Property: 'MountRoot' mount point root directory
 		float mFrequency = 1.0f;							///< Property: 'Frequency' How often to check for disk changes in seconds
+		bool mReadOnly = true;								///< Property: 'ReadOnly' Mount read-only, otherwise read-write
 
 		rtti::TypeInfo getServiceType() const override		{ return RTTI_OF(MountService); }
 	};
@@ -36,7 +37,7 @@ namespace nap
 	 * Linux Only!
 	 *
 	 * This object requires sudo NOPASSWD privileges for the following commands:
-	 * user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /bin/rmdir, /usr/sbin/blkid
+	 * user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /usr/sbin/blkid
 	 */
 	class NAPAPI MountService : public Service
 	{
@@ -82,7 +83,12 @@ namespace nap
 		/**
 		 * @return if the mounter is enabled
 		 */
-		bool getEnabled() const { assert(mConfig != nullptr); return mConfig->mEnabled;}
+		bool getEnabled() const { assert(mConfig != nullptr); return mConfig->mEnabled; }
+
+		/**
+		 * @return if drives are mounted read-only, otherwise read-write
+		 */
+		bool getReadOnly() const { assert(mConfig != nullptr); return mConfig->mReadOnly; }
 
 		// Called when a drive is mounted
 		Signal<const std::string&> driveAdded;
@@ -97,8 +103,6 @@ namespace nap
 		using DiskID = std::pair<const std::string, const std::string>;
 
 	private:
-
-
 		std::unordered_set<std::string> mExclusionMap; // Disk label or uuid to exclude
 		std::unordered_set<std::string> mInclusionMap; // Disk label or uuid to include, empty = all
 		MountServiceConfiguration* mConfig = nullptr;
