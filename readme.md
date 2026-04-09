@@ -38,19 +38,18 @@ This application, when configured to mount drives (default), requires `NOPASSWD`
 
 - /bin/mount
 - /bin/umount
-- /bin/rmdir
 - /usr/sbin/blkid
 
 Add a new file to `/etc/sudoers.d`:
 
 ```
 cd /etc/sudoers.d
-sudo nano pocketpreview
+sudo nano napmount
 ```
 
 And add the following line, *replace* `user` with your username:
 
 ```
 # give user no-pass mount permissions
-user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /bin/rmdir, /usr/sbin/blkid
+user ALL=(ALL) NOPASSWD:/bin/mount, /bin/umount, /usr/sbin/blkid
 ```
